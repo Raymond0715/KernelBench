@@ -202,10 +202,12 @@ class EvalFunc:
         use_torch_compile: bool,
         torch_compile_backend: str,
         torch_compile_options: str,
-        gpu_arch: list
+        gpu_arch: list,
+        precision: str,
     ):
         """Measure the execution time of a reference program on Modal"""
         from scripts.generate_baseline_time import measure_program_time
+        from src.eval import get_torch_dtype_from_string
         from src.utils import set_gpu_arch
 
         set_gpu_arch(gpu_arch)
@@ -218,7 +220,8 @@ class EvalFunc:
             use_torch_compile=use_torch_compile,
             torch_compile_backend=torch_compile_backend,
             torch_compile_options=torch_compile_options,
-            device=device
+            device=device,
+            precision=get_torch_dtype_from_string(precision),
         )
 
 
@@ -284,7 +287,8 @@ def main(config: ScriptConfig):
                                                     ref_arch_src=ref_arch_src,
                                                     num_trials=config.num_perf_trials,
                                                     use_torch_compile=False,
-                                                    device=device)
+                                                    device=device,
+                                                    precision=kernel_eval.get_torch_dtype_from_string(config.precision))
         ref_exec_eager_time = ref_time_eager_result.get("mean", None)
 
         # Measure Torch Compile time
@@ -294,7 +298,8 @@ def main(config: ScriptConfig):
                                                     use_torch_compile=True,
                                                     torch_compile_backend="inductor",
                                                     torch_compile_options="default",
-                                                    device=device)
+                                                    device=device,
+                                                    precision=kernel_eval.get_torch_dtype_from_string(config.precision))
         ref_exec_compile_time = ref_time_compile_result.get("mean", None)
 
     elif config.eval_mode == "modal":
@@ -323,10 +328,11 @@ def main(config: ScriptConfig):
                 ref_arch_src=ref_arch_src,
                 num_trials=config.num_perf_trials,
                 use_torch_compile=False,
-                torch_compile_backend=None,
-                torch_compile_options=None,
-                gpu_arch=gpu_arch
-            )
+                    torch_compile_backend=None,
+                    torch_compile_options=None,
+                    gpu_arch=gpu_arch,
+                    precision=config.precision,
+                )
             ref_exec_eager_time = ref_time_eager_result.get("mean", None)
 
             # Measure Torch Compile time
@@ -337,10 +343,11 @@ def main(config: ScriptConfig):
                 ref_arch_src=ref_arch_src,
                 num_trials=config.num_perf_trials,
                 use_torch_compile=True,
-                torch_compile_backend="inductor",
-                torch_compile_options="default",
-                gpu_arch=gpu_arch
-            )
+                    torch_compile_backend="inductor",
+                    torch_compile_options="default",
+                    gpu_arch=gpu_arch,
+                    precision=config.precision,
+                )
             ref_exec_compile_time = ref_time_compile_result.get("mean", None)
 
     print("="*40)
@@ -358,6 +365,8 @@ def main(config: ScriptConfig):
         print("[Speedup] Speedup Not Available as Kernel did not pass correctness")
 
     print("="*40)
+
+    return kernel_eval_result, ref_exec_eager_time, ref_exec_compile_time, kernel_exec_time
 
 
 if __name__ == "__main__":

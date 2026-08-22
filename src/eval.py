@@ -566,6 +566,7 @@ def eval_kernel_against_ref(
     if measure_performance:
         try:
             if kernel_exec_result and kernel_exec_result.correctness:
+            # if True:
                 if verbose:
                     print("[Eval] Measuring Performance as Sample is Correct")
 
@@ -762,6 +763,7 @@ def run_and_check_correctness(
                 # check output value difference
                 if not torch.allclose(
                     output, output_new, atol=tolerance, rtol=tolerance
+                    # output, output_new, atol=1e-2, rtol=1e-2
                 ):  # fail
                     max_diff = torch.max(torch.abs(output - output_new)).item()
                     avg_diff = torch.mean(torch.abs(output - output_new)).item()

@@ -81,6 +81,7 @@ def measure_program_time(
         torch_compile_options: str="default",
         device: torch.device="cuda:0",
         verbose: bool = False,
+        precision: torch.dtype = torch.float32,
 ) -> dict:
     """
     Measure the time of a KernelBench reference architecture
@@ -97,16 +98,33 @@ def measure_program_time(
             set_seed(42)
             init_inputs = get_init_inputs()
             inputs = [
-                x.cuda(device=device) if isinstance(x, torch.Tensor) else x
+                x.to(device=device, dtype=precision)
+                if isinstance(x, torch.Tensor) and x.is_floating_point()
+                else x.to(device=device)
+                if isinstance(x, torch.Tensor)
+                else x
                 for x in inputs
             ]
             init_inputs = [
-                x.cuda(device=device) if isinstance(x, torch.Tensor) else x
+                x.to(device=device, dtype=precision)
+                if isinstance(x, torch.Tensor) and x.is_floating_point()
+                else x.to(device=device)
+                if isinstance(x, torch.Tensor)
+                else x
                 for x in init_inputs
             ]
 
             # Initialize PyTorch model, use this for eager mode execution
             model = Model(*init_inputs)
+            model = model.to(device=device, dtype=precision)
+
+            if verbose:
+                input_dtypes = [
+                    x.dtype for x in inputs if isinstance(x, torch.Tensor)
+                ]
+                parameter_dtypes = [parameter.dtype for parameter in model.parameters()]
+                print(f"Reference input dtypes: {input_dtypes}")
+                print(f"Reference parameter dtypes: {parameter_dtypes}")
             
             if use_torch_compile:
                 print(f"Using torch.compile to compile model {ref_arch_name} with {torch_compile_backend} backend and {torch_compile_options} mode")
@@ -114,7 +132,6 @@ def measure_program_time(
             else:
                 print(f"Using PyTorch Eager Execution on {ref_arch_name}")
             
-            model = model.cuda(device=device)
             torch.cuda.synchronize(device=device)
             elapsed_times = time_execution_with_cuda_event(
                 model, *inputs, num_trials=num_trials, verbose=verbose, device=device
@@ -285,5 +302,4 @@ def get_time_old(level_num, problem_id, num_trials=100, torch_compile=False):
             return (ref_arch_name, runtime_stats)
     except Exception as e:
         print(f"[Eval] Error in Measuring Performance: {e}")
-
 
