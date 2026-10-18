@@ -1,4 +1,9 @@
 import shutil
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 import torch
 import pydra
 from pydra import REQUIRED, Config
@@ -107,6 +112,7 @@ class ScriptConfig(Config):
         # Replace with your NVIDIA GPU architecture, e.g. ["Hopper"]
         self.gpu_arch = ["Ada"]
         self.precision = "fp32"
+        self.precision_contract_json = ""
         self.backend = "cuda"
 
     def __repr__(self):
@@ -225,6 +231,28 @@ class EvalFunc:
         )
 
 
+def run_local_stage(stage, ref_arch_src, kernel_src, configs):
+    """Run one GPU stage to completion in a fresh interpreter."""
+    with tempfile.TemporaryDirectory(prefix="kernelbench-stage-") as directory:
+        request_path = Path(directory) / "request.json"
+        result_path = Path(directory) / "result.json"
+        request_path.write_text(json.dumps({
+            "stage": stage, "ref_arch_src": ref_arch_src,
+            "kernel_src": kernel_src, "configs": configs,
+        }), encoding="utf-8")
+        worker = Path(__file__).with_name("local_eval_stage.py")
+        completed = subprocess.run(
+            [sys.executable, str(worker), str(request_path), str(result_path)],
+            check=False,
+        )
+        if not result_path.exists():
+            raise RuntimeError(f"Local {stage} worker exited with code {completed.returncode} without a result")
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        if completed.returncode or not payload["ok"]:
+            raise RuntimeError(f"Local {stage} worker failed: {payload.get('error', '')}")
+        return payload["result"]
+
+
 @pydra.main(base=ScriptConfig)
 def main(config: ScriptConfig):
 
@@ -267,39 +295,19 @@ def main(config: ScriptConfig):
 
     if config.eval_mode == "local":
         # Local evaluation (existing code path)
-        device = torch.device("cuda:0")
-        kernel_utils.set_gpu_arch(config.gpu_arch)
-
-        print("[INFO] Evaluating kernel against reference code (LOCAL)")
-        # Evaluate kernel against reference code
-        kernel_eval_result = evaluate_single_sample_src(
-            ref_arch_src=ref_arch_src,
-            kernel_src=kernel_src,
-            configs=config.to_dict(),
-            device=device
-        )
+        # Fresh interpreters prevent allocator/cuDNN/compiler state from leaking
+        # between stages. run() waits for exit before starting the next stage.
+        with tempfile.TemporaryDirectory(prefix="kernelbench-correctness-") as directory:
+            stage_config = config.to_dict()
+            stage_config["correctness_artifact_dir"] = directory
+            run_local_stage("reference_outputs", ref_arch_src, kernel_src, stage_config)
+            kernel_payload = run_local_stage("kernel", ref_arch_src, kernel_src, stage_config)
+        kernel_eval_result = kernel_eval.KernelExecResult(**kernel_payload["kernel_result"])
+        kernel_eval_result.metadata["instruction_reports"] = kernel_payload["instruction_reports"]
         kernel_exec_time = kernel_eval_result.runtime
-
-        # Measure baseline time
-        print("[INFO] Measuring reference program time")
-        # Default using PyTorch Eager here
-        ref_time_eager_result = measure_program_time(ref_arch_name="Reference Program",
-                                                    ref_arch_src=ref_arch_src,
-                                                    num_trials=config.num_perf_trials,
-                                                    use_torch_compile=False,
-                                                    device=device,
-                                                    precision=kernel_eval.get_torch_dtype_from_string(config.precision))
+        ref_time_eager_result = run_local_stage("eager", ref_arch_src, kernel_src, config.to_dict())
         ref_exec_eager_time = ref_time_eager_result.get("mean", None)
-
-        # Measure Torch Compile time
-        ref_time_compile_result = measure_program_time(ref_arch_name="Reference Program",
-                                                    ref_arch_src=ref_arch_src,
-                                                    num_trials=config.num_perf_trials,
-                                                    use_torch_compile=True,
-                                                    torch_compile_backend="inductor",
-                                                    torch_compile_options="default",
-                                                    device=device,
-                                                    precision=kernel_eval.get_torch_dtype_from_string(config.precision))
+        ref_time_compile_result = run_local_stage("compile", ref_arch_src, kernel_src, config.to_dict())
         ref_exec_compile_time = ref_time_compile_result.get("mean", None)
 
     elif config.eval_mode == "modal":

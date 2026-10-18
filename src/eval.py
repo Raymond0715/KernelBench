@@ -795,6 +795,11 @@ def run_and_check_correctness(
                 )
                 # break
 
+            # Drop this trial's tensors before the next forward allocates its
+            # outputs/workspace. Python otherwise keeps the previous outputs
+            # alive while evaluating the right-hand side of an assignment.
+            del output, output_new, inputs
+
     if verbose:
         print(
             f"[Eval] Pass count: {pass_count}, num_correct_trials: {num_correct_trials}"
